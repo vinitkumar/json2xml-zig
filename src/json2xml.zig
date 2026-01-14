@@ -370,14 +370,34 @@ fn writeXPathXml(writer: Writer, value: std.json.Value, options: Options, alloca
     try convertToXPath31(bufWriter, value, null);
 
     const xml = buffer.items;
-    if (std.mem.startsWith(u8, xml, "<map")) {
-        const replaced = std.mem.replaceOwned(u8, allocator, xml, "<map", "<map xmlns=\"http://www.w3.org/2005/xpath-functions\"") catch xml;
-        try writer.writeAll(replaced);
+    
+    // Insert xmlns attribute into the root element only
+    if (std.mem.startsWith(u8, xml, "<map>")) {
+        try writer.writeAll("<map xmlns=\"http://www.w3.org/2005/xpath-functions\">");
+        if (xml.len > 5) {
+            try writer.writeAll(xml[5..]);
+        }
         return;
     }
-    if (std.mem.startsWith(u8, xml, "<array")) {
-        const replaced = std.mem.replaceOwned(u8, allocator, xml, "<array", "<array xmlns=\"http://www.w3.org/2005/xpath-functions\"") catch xml;
-        try writer.writeAll(replaced);
+    if (std.mem.startsWith(u8, xml, "<map ")) {
+        try writer.writeAll("<map xmlns=\"http://www.w3.org/2005/xpath-functions\" ");
+        if (xml.len > 5) {
+            try writer.writeAll(xml[5..]);
+        }
+        return;
+    }
+    if (std.mem.startsWith(u8, xml, "<array>")) {
+        try writer.writeAll("<array xmlns=\"http://www.w3.org/2005/xpath-functions\">");
+        if (xml.len > 7) {
+            try writer.writeAll(xml[7..]);
+        }
+        return;
+    }
+    if (std.mem.startsWith(u8, xml, "<array ")) {
+        try writer.writeAll("<array xmlns=\"http://www.w3.org/2005/xpath-functions\" ");
+        if (xml.len > 7) {
+            try writer.writeAll(xml[7..]);
+        }
         return;
     }
 
