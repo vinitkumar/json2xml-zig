@@ -7,7 +7,7 @@ run:
 	zig build run
 
 test:
-	zig build test
+	make clean && zig build test --summary all --verbose
 
 fmt:
 	zig fmt .
