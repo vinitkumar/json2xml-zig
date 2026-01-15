@@ -370,7 +370,7 @@ fn writeXPathXml(writer: Writer, value: std.json.Value, options: Options, alloca
     try convertToXPath31(bufWriter, value, null);
 
     const xml = buffer.items;
-    
+
     // Insert xmlns attribute into the root element only
     if (std.mem.startsWith(u8, xml, "<map>")) {
         try writer.writeAll("<map xmlns=\"http://www.w3.org/2005/xpath-functions\">");
