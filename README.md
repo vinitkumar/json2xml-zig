@@ -211,8 +211,16 @@ python3 benchmark.py
 
 ## Related Projects
 
-- [json2xml](https://github.com/vinitkumar/json2xml) - The original Python implementation
-- [json2xml-go](https://github.com/vinitkumar/json2xml-go) - Go implementation
+This library is part of the json2xml family. Choose based on your needs:
+
+| Use Case | Recommended | Link |
+|----------|-------------|------|
+| Maximum performance | **Zig** (this library) | - |
+| Balance of speed and ecosystem | Go | [json2xml-go](https://github.com/vinitkumar/json2xml-go) |
+| Python integration / scripting | Python | [json2xml](https://github.com/vinitkumar/json2xml) |
+
+- **Python**: [json2xml](https://github.com/vinitkumar/json2xml) - The original implementation, `pip install json2xml`
+- **Go**: [json2xml-go](https://github.com/vinitkumar/json2xml-go) - Native compiled binary, 7x faster than Python
 
 ## License
 
