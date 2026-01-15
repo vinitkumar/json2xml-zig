@@ -1,3 +1,5 @@
+![json2xml hero](./json2xml-hero.png)
+
 # json2xml-zig
 
 A blazing-fast JSON to XML converter written in Zig. This is a port of the Python [json2xml](https://github.com/vinitkumar/json2xml) library, designed for maximum performance.
