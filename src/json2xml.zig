@@ -382,7 +382,7 @@ fn writeValue(
     writer: Writer,
     value: std.json.Value,
     options: Options,
-    tag: ?[]const u8,          // ? makes it optional (can be null)
+    tag: ?[]const u8, // ? makes it optional (can be null)
     indent: usize,
     parent_is_list: bool,
 ) WriteError!void {
