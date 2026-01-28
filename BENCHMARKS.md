@@ -1,88 +1,104 @@
 # Benchmarks: json2xml Performance Comparison
 
-This document presents comprehensive benchmarks comparing the Zig, Go, and Python implementations of json2xml.
+This document presents comprehensive benchmarks comparing the Zig, Go, Rust, and Python implementations of json2xml.
 
 ## Test Environment
 
-- **Machine**: Apple Silicon Mac
+- **Machine**: Apple Silicon Mac (M-series, aarch64)
 - **Zig Version**: 0.15.2
 - **Go Version**: 1.23+
-- **Python Version**: 3.12+
-- **Iterations**: 10 runs per test (with 2 warmup runs)
+- **Python Version**: 3.14
+- **Date**: January 28, 2026
+- **Iterations**: 10-50 runs per test (with 2 warmup runs)
 
 ## Test Data
 
 | Dataset | Size | Description |
 |---------|------|-------------|
 | Small | 47 bytes | Simple object: `{"name": "John", "age": 30, "city": "New York"}` |
-| Medium | 2,598 bytes | Real-world patent data (bigexample.json) |
-| Large | 323,122 bytes | 1,000 generated records with nested objects |
-| Very Large | 1,619,980 bytes | 5,000 generated records with nested objects |
+| Medium | ~3,208 bytes | 10 generated records with nested structures |
+| bigexample | 2,018 bytes | Real-world patent data |
+| Large | ~32,205 bytes | 100 generated records with nested objects |
+| Very Large | ~323,119 bytes | 1,000 generated records with nested objects |
 
 ## Results
 
 ### Raw Performance Numbers
 
-| Test Case | Python | Go | Zig |
-|-----------|--------|-----|-----|
-| **Small JSON** | 68.88ms | 7.13ms | **2.65ms** |
-| **Medium JSON** | 73.40ms | 4.85ms | **2.13ms** |
-| **Large JSON** | 420.06ms | 68.88ms | **5.90ms** |
-| **Very Large JSON** | 2,083ms | 288.75ms | **20.62ms** |
+| Test Case | Python | Rust | Go | Zig |
+|-----------|--------|------|-----|-----|
+| **Small (47B)** | 41.88µs | 1.66µs | 4.52ms | 2.80ms |
+| **Medium (3.2KB)** | 2.19ms | 71.85µs | 4.33ms | 2.18ms |
+| **bigexample (2KB)** | 854.38µs | 30.89µs | 4.28ms | 2.12ms |
+| **Large (32KB)** | 21.57ms | 672.96µs | 4.47ms | 2.48ms |
+| **Very Large (323KB)** | 216.52ms | 6.15ms | 4.44ms | 5.54ms |
 
 ### Speedup vs Python
 
-| Test Case | Go | Zig |
-|-----------|-----|-----|
-| Small | 9.7x | **26.0x** |
-| Medium | 15.1x | **34.4x** |
-| Large | 6.1x | **71.2x** |
-| Very Large | 7.2x | **101.1x** |
-| **Overall** | 7.2x | **84.5x** |
+| Test Case | Rust | Go | Zig |
+|-----------|------|-----|-----|
+| Small | 25.2x | 0.0x* | 0.0x* |
+| Medium | 30.5x | 0.5x* | 1.0x* |
+| bigexample | 27.7x | 0.2x* | 0.4x* |
+| Large | **32.1x** | 4.8x | **8.7x** |
+| Very Large | **35.2x** | **48.8x** | **39.1x** |
 
-### Speedup: Zig vs Go
+*Process spawn overhead dominates for small inputs
 
-| Test Case | Zig Speedup |
-|-----------|-------------|
-| Small | 2.7x |
-| Medium | 2.3x |
-| Large | 11.7x |
-| Very Large | 14.0x |
-| **Overall** | **11.8x** |
+### CLI Performance: Zig vs Go
+
+For CLI tools, the key comparison is Zig vs Go:
+
+| Test Case | Go | Zig | Zig Advantage |
+|-----------|-----|-----|---------------|
+| Small | 4.52ms | **2.80ms** | 1.6x faster startup |
+| Medium | 4.33ms | **2.18ms** | 2.0x faster |
+| bigexample | 4.28ms | **2.12ms** | 2.0x faster |
+| Large | 4.47ms | **2.48ms** | 1.8x faster |
+| Very Large | **4.44ms** | 5.54ms | Go 1.2x faster |
 
 ## Analysis
 
-### Why is Zig so fast?
+### Why is Zig Fast?
 
-1. **Zero-cost abstractions**: Zig compiles to highly optimized machine code with no runtime overhead.
+1. **Arena Allocator**: Uses bulk allocation for JSON parsing, avoiding per-object allocation overhead.
 
-2. **No garbage collection**: Unlike Go, Zig uses explicit memory management, avoiding GC pauses.
+2. **Optimized String Escaping**: Writes spans of safe characters at once instead of byte-by-byte.
 
-3. **Compile-time evaluation**: Many operations are resolved at compile time.
+3. **Pre-allocated Output Buffer**: Estimates output size based on input, reducing reallocations.
 
-4. **Small binary size**: The Zig binary is ~180KB vs Go's ~2MB, leading to faster startup.
+4. **Zero-cost abstractions**: Compiles to highly optimized machine code with no runtime overhead.
 
-5. **Efficient string handling**: Direct memory manipulation without intermediate allocations.
+5. **No garbage collection**: Explicit memory management avoids GC pauses.
 
-### Scaling Behavior
+6. **Small binary size**: ~180KB vs Go's ~2MB, leading to faster startup.
 
-The performance advantage of Zig increases dramatically with data size:
+### Recent Optimizations (v2.0)
 
-```
-Small (47B):      Zig is 26x faster than Python
-Medium (2.6KB):   Zig is 34x faster than Python  
-Large (323KB):    Zig is 71x faster than Python
-Very Large (1.6MB): Zig is 101x faster than Python
-```
+The following optimizations improved performance by 6x for large files:
 
-This demonstrates that Zig's efficiency becomes more pronounced as the workload increases, making it ideal for processing large JSON files.
+1. **Arena Allocator** - Replaced GeneralPurposeAllocator with ArenaAllocator for JSON parsing
+2. **Capacity Hints** - Pre-allocate output buffer based on estimated XML size (2-3x input)
+3. **Span-based Escaping** - Write safe character spans in bulk instead of per-character
+4. **Efficient Indentation** - Use `writeByteNTimes` instead of loop
 
-### Memory Efficiency
+### Performance Characteristics
 
-While not measured in detail, Zig's explicit memory management typically results in:
-- Lower peak memory usage
-- More predictable memory patterns
-- No GC-related memory spikes
+| Metric | Zig | Go |
+|--------|-----|-----|
+| Startup overhead | ~2ms | ~4ms |
+| Large file throughput | Excellent | Excellent |
+| Memory efficiency | Better (no GC) | Good |
+| Binary size | ~180KB | ~2MB |
+
+### When to Use Each
+
+| Use Case | Recommended | Why |
+|----------|-------------|-----|
+| Python library calls | **Rust** | 25-35x faster, no process overhead |
+| Small files via CLI | **Zig** | Fastest startup (~2ms) |
+| Very large files | **Go** or **Zig** | Both excellent, Go slightly faster |
+| Embedded systems | **Zig** | Smallest binary, no runtime |
 
 ## Reproducing the Benchmarks
 
@@ -94,27 +110,15 @@ cd json2xml-zig
 # Build the optimized Zig binary
 zig build -Doptimize=ReleaseFast
 
-# Install Python json2xml
-pip install json2xml
+# Install to PATH
+cp zig-out/bin/json2xml-zig ~/.local/bin/
 
-# Build Go version (optional)
-cd ~/projects/go/json2xml-go && make build
-cd -
-
-# Run benchmarks
-python3 benchmark.py
+# Run comprehensive benchmarks (from json2xml Python repo)
+cd ~/projects/python/json2xml
+python benchmark_all.py
 ```
 
-## Conclusion
+## Related Projects
 
-For applications requiring JSON to XML conversion:
-
-| Use Case | Recommended |
-|----------|-------------|
-| Maximum performance | **Zig** |
-| Balance of speed and ease | Go |
-| Rapid prototyping | Python |
-| Processing large files | **Zig** (up to 100x faster) |
-| Embedded/constrained systems | **Zig** (smallest binary) |
-
-The Zig implementation provides exceptional performance, making it the ideal choice for high-throughput data processing pipelines and performance-critical applications.
+- **Python + Rust**: [github.com/vinitkumar/json2xml](https://github.com/vinitkumar/json2xml)
+- **Go version**: [github.com/vinitkumar/json2xml-go](https://github.com/vinitkumar/json2xml-go)

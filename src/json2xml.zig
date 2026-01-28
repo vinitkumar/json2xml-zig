@@ -73,20 +73,19 @@ const WriteError = error{OutOfMemory};
 //
 // IMPORTANT: The caller owns the returned memory and must free it!
 pub fn toXml(allocator: std.mem.Allocator, value: std.json.Value, options: Options) ![]u8 {
-    // -------------------------------------------------------------------------
-    // DYNAMIC ARRAY FOR STRING BUILDING
-    // -------------------------------------------------------------------------
-    // ArrayList(u8) is Zig's dynamic array, similar to std::vector<char>.
-    // initCapacity pre-allocates 4096 bytes to reduce reallocations.
-    // This is a performance optimization for building strings.
-    var output: std.ArrayList(u8) = try std.ArrayList(u8).initCapacity(allocator, 4096);
+    return toXmlWithCapacity(allocator, value, options, 4096);
+}
 
-    // -------------------------------------------------------------------------
-    // ERRDEFER - CLEANUP ON ERROR
-    // -------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// OPTIMIZED PUBLIC FUNCTION: toXmlWithCapacity
+// -----------------------------------------------------------------------------
+// Same as toXml but allows specifying initial buffer capacity for better
+// performance when the approximate output size is known.
+pub fn toXmlWithCapacity(allocator: std.mem.Allocator, value: std.json.Value, options: Options, capacity: usize) ![]u8 {
+    // Use provided capacity hint to reduce reallocations
+    var output: std.ArrayList(u8) = try std.ArrayList(u8).initCapacity(allocator, capacity);
+
     // errdefer runs ONLY if the function returns an error.
-    // Regular defer runs always (success or error).
-    // This ensures we don't leak memory if something fails.
     errdefer output.deinit(allocator);
 
     // Get a writer interface for appending to the ArrayList
@@ -94,7 +93,6 @@ pub fn toXml(allocator: std.mem.Allocator, value: std.json.Value, options: Optio
 
     if (options.xpath_format) {
         try writeXPathXml(writer, value, options, allocator);
-        // toOwnedSlice transfers ownership of the underlying array to the caller
         return output.toOwnedSlice(allocator);
     }
 
@@ -127,14 +125,11 @@ fn writeXmlDeclaration(writer: Writer, pretty: bool) WriteError!void {
 // WRITE INDENTATION
 // -----------------------------------------------------------------------------
 // Writes spaces for indentation (2 spaces per level).
+// Optimized to use writeByteNTimes instead of a loop.
 fn writeIndent(writer: Writer, indent: usize, pretty: bool) WriteError!void {
     if (!pretty) return; // Early return if not pretty printing
-
-    // Simple while loop for repetition
-    var i: usize = 0;
-    while (i < indent) : (i += 1) {
-        try writer.writeAll("  "); // 2 spaces per indent level
-    }
+    // Write all spaces at once instead of looping
+    try writer.writeByteNTimes(' ', indent * 2);
 }
 
 // -----------------------------------------------------------------------------
@@ -181,19 +176,33 @@ fn getXmlType(value: std.json.Value) []const u8 {
 // -----------------------------------------------------------------------------
 // XML has special characters that must be escaped: & " ' < >
 // This function replaces them with XML entities.
+// Optimized: writes spans of safe characters at once instead of byte-by-byte.
 fn writeEscaped(writer: Writer, input: []const u8) WriteError!void {
-    // Iterate over each byte in the input string
-    for (input) |c| {
-        // Switch on individual characters (bytes)
-        switch (c) {
+    var i: usize = 0;
+    while (i < input.len) {
+        // Find the next special character that needs escaping
+        const special_chars = "&\"'<>";
+        const j = std.mem.indexOfAnyPos(u8, input, i, special_chars) orelse {
+            // No more special chars - write the rest and return
+            try writer.writeAll(input[i..]);
+            return;
+        };
+
+        // Write the safe span before the special character
+        if (j > i) {
+            try writer.writeAll(input[i..j]);
+        }
+
+        // Write the escape sequence for the special character
+        switch (input[j]) {
             '&' => try writer.writeAll("&amp;"),
             '"' => try writer.writeAll("&quot;"),
             '\'' => try writer.writeAll("&apos;"),
             '<' => try writer.writeAll("&lt;"),
             '>' => try writer.writeAll("&gt;"),
-            // else catches all other characters
-            else => try writer.writeByte(c), // writeByte writes a single byte
+            else => unreachable,
         }
+        i = j + 1;
     }
 }
 

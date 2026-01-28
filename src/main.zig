@@ -70,75 +70,42 @@ const CliOptions = struct {
 // propagating errors up the call stack if they occur.
 pub fn main() !void {
     // -------------------------------------------------------------------------
-    // MEMORY ALLOCATION
+    // MEMORY ALLOCATION - OPTIMIZED FOR PERFORMANCE
     // -------------------------------------------------------------------------
-    // Zig has NO garbage collector and NO hidden allocations. You must be
-    // explicit about memory. GeneralPurposeAllocator is a debug-friendly
-    // allocator that catches leaks and use-after-free bugs.
-    //
-    // The (.{}) is an anonymous struct literal with default values.
-    // The {} at the end initializes the struct (like calling a constructor).
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-
-    // -------------------------------------------------------------------------
-    // DEFER - RAII-LIKE CLEANUP
-    // -------------------------------------------------------------------------
-    // `defer` schedules code to run when the current scope exits.
-    // This ensures cleanup happens even if an error occurs (like RAII in C++
-    // or Python's context managers). Here we deinit the allocator at the end.
-    //
-    // The _ = discards the return value (Zig requires you to handle all
-    // return values, or explicitly discard them with _).
-    defer _ = gpa.deinit();
-
-    // Get an allocator interface from the GPA. This is what we pass to
-    // functions that need to allocate memory.
-    const allocator = gpa.allocator();
+    // Use ArenaAllocator backed by page_allocator for fast bulk allocations.
+    // Arena is much faster than GPA for JSON parsing which creates many small
+    // allocations that are all freed together at the end.
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
     // -------------------------------------------------------------------------
     // COMMAND-LINE ARGUMENTS
     // -------------------------------------------------------------------------
-    // `try` is error handling: if argsAlloc fails, main() returns that error.
-    // Without try, you'd get an error union that you'd need to handle manually.
     const args = try std.process.argsAlloc(allocator);
-
-    // defer cleanup: free the args memory when we leave this scope
-    defer std.process.argsFree(allocator, args);
+    // No need to free with arena - it's all freed at once on deinit
 
     // -------------------------------------------------------------------------
     // CREATING STRUCT INSTANCES
     // -------------------------------------------------------------------------
-    // CliOptions{} creates an instance with all default values.
-    // var (not const) because parseArgs will mutate it via pointer.
     var opts = CliOptions{};
-
-    // Pass &opts (pointer to opts) so parseArgs can modify it.
-    // In Zig, & takes the address of a variable (like & in C).
     parseArgs(args, &opts);
 
     // -------------------------------------------------------------------------
     // TRY AND ERROR PROPAGATION
     // -------------------------------------------------------------------------
-    // `try` unwraps the result or returns the error to the caller.
-    // This is Zig's clean way of propagating errors up the call stack.
     const input_data = try readInput(allocator, opts);
-
-    // Always free what we allocate. defer ensures this runs on scope exit.
-    defer allocator.free(input_data);
 
     // -------------------------------------------------------------------------
     // USING THE STANDARD LIBRARY JSON PARSER
     // -------------------------------------------------------------------------
     // parseFromSlice parses a JSON string into a Value type.
-    // The .{} is an empty options struct (using defaults).
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, input_data, .{});
-    defer parsed.deinit();
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, input_data, .{});
+    // No defer deinit needed - arena handles cleanup
 
     // -------------------------------------------------------------------------
     // STRUCT INITIALIZATION WITH NAMED FIELDS
     // -------------------------------------------------------------------------
-    // This creates an Options struct, explicitly setting each field.
-    // The .field = value syntax is Zig's struct literal initialization.
     const xml_options = json2xml.Options{
         .wrapper = opts.wrapper,
         .root = opts.root,
@@ -150,9 +117,11 @@ pub fn main() !void {
         .list_headers = opts.list_headers,
     };
 
-    // Convert JSON to XML using our library
-    const output = try json2xml.toXml(allocator, parsed.value, xml_options);
-    defer allocator.free(output);
+    // Estimate output size: XML is typically 2-3x larger than JSON
+    const estimated_size = input_data.len * (if (opts.pretty) @as(usize, 3) else @as(usize, 2));
+
+    // Convert JSON to XML using our library with size hint
+    const output = try json2xml.toXmlWithCapacity(allocator, parsed.value, xml_options, estimated_size);
 
     // Write the result to stdout or a file
     try writeOutput(output, opts);
