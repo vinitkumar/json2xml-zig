@@ -23,7 +23,7 @@ A blazing-fast JSON to XML converter written in Zig. This is a port of the Pytho
 
 ### Prerequisites
 
-- [Zig](https://ziglang.org/download/) 0.15.0 or later
+- [Zig](https://ziglang.org/download/) 0.15.2 or later
 
 ### Build from source
 
@@ -172,11 +172,11 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     const json_str = "{\"name\": \"John\", \"age\": 30}";
-    
+
     var parsed = try std.json.parseFromSlice(
-        std.json.Value, 
-        allocator, 
-        json_str, 
+        std.json.Value,
+        allocator,
+        json_str,
         .{}
     );
     defer parsed.deinit();
