@@ -68,22 +68,20 @@ const CliOptions = struct {
 // In Zig, errors are values, not exceptions. Functions that can fail return
 // an error union type (ErrorType!ReturnType). The `try` keyword unwraps these,
 // propagating errors up the call stack if they occur.
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     // -------------------------------------------------------------------------
     // MEMORY ALLOCATION - OPTIMIZED FOR PERFORMANCE
     // -------------------------------------------------------------------------
-    // Use ArenaAllocator backed by page_allocator for fast bulk allocations.
+    // Use the process arena provided by Zig's runtime for fast bulk allocations.
     // Arena is much faster than GPA for JSON parsing which creates many small
     // allocations that are all freed together at the end.
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    const allocator = init.arena.allocator();
 
     // -------------------------------------------------------------------------
     // COMMAND-LINE ARGUMENTS
     // -------------------------------------------------------------------------
-    const args = try std.process.argsAlloc(allocator);
-    // No need to free with arena - it's all freed at once on deinit
+    const args = try init.minimal.args.toSlice(allocator);
+    // No need to free with arena - it's all freed at once on exit
 
     // -------------------------------------------------------------------------
     // CREATING STRUCT INSTANCES
@@ -94,7 +92,7 @@ pub fn main() !void {
     // -------------------------------------------------------------------------
     // TRY AND ERROR PROPAGATION
     // -------------------------------------------------------------------------
-    const input_data = try readInput(allocator, opts);
+    const input_data = try readInput(init.io, allocator, opts);
 
     // -------------------------------------------------------------------------
     // USING THE STANDARD LIBRARY JSON PARSER
@@ -124,7 +122,7 @@ pub fn main() !void {
     const output = try json2xml.toXmlWithCapacity(allocator, parsed.value, xml_options, estimated_size);
 
     // Write the result to stdout or a file
-    try writeOutput(output, opts);
+    try writeOutput(init.io, output, opts);
 }
 
 // -----------------------------------------------------------------------------
@@ -140,7 +138,7 @@ pub fn main() !void {
 //     The * means we receive a pointer, so we can modify the original.
 //
 // Return type: void - this function cannot fail (no ! prefix).
-fn parseArgs(args: [][:0]u8, opts: *CliOptions) void {
+fn parseArgs(args: []const [:0]const u8, opts: *CliOptions) void {
     // -------------------------------------------------------------------------
     // WHILE LOOP WITH UPDATE CLAUSE
     // -------------------------------------------------------------------------
@@ -234,7 +232,7 @@ fn parseBool(value: []const u8) bool {
 //   - Returning custom errors
 //
 // Return type: ![]u8 means "either an error or a slice of bytes"
-fn readInput(allocator: std.mem.Allocator, opts: CliOptions) ![]u8 {
+fn readInput(io: std.Io, allocator: std.mem.Allocator, opts: CliOptions) ![]u8 {
     // -------------------------------------------------------------------------
     // OPTIONAL UNWRAPPING WITH IF
     // -------------------------------------------------------------------------
@@ -250,14 +248,14 @@ fn readInput(allocator: std.mem.Allocator, opts: CliOptions) ![]u8 {
     if (opts.input_file) |path| {
         // Read from stdin if path is "-"
         if (std.mem.eql(u8, path, "-")) {
-            const stdin = std.fs.File.stdin();
-            // readToEndAlloc reads until EOF, allocating memory as needed.
-            // The second arg is max bytes to read (10 MB here).
-            return stdin.readToEndAlloc(allocator, 10 * 1024 * 1024);
+            const stdin = std.Io.File.stdin();
+            var buffer: [4096]u8 = undefined;
+            var reader = stdin.readerStreaming(io, &buffer);
+            return reader.interface.allocRemaining(allocator, .limited(10 * 1024 * 1024));
         }
         // Read from file. cwd() returns the current working directory.
         // readFileAlloc reads the entire file into allocated memory.
-        return std.fs.cwd().readFileAlloc(allocator, path, 100 * 1024 * 1024);
+        return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(100 * 1024 * 1024));
     }
 
     // -------------------------------------------------------------------------
@@ -271,23 +269,23 @@ fn readInput(allocator: std.mem.Allocator, opts: CliOptions) ![]u8 {
 // -----------------------------------------------------------------------------
 // WRITE OUTPUT TO FILE OR STDOUT
 // -----------------------------------------------------------------------------
-fn writeOutput(output: []const u8, opts: CliOptions) !void {
+fn writeOutput(io: std.Io, output: []const u8, opts: CliOptions) !void {
     if (opts.output_file) |path| {
         // createFile creates or truncates a file for writing.
         // The .{} is an empty options struct (use defaults).
-        const file = try std.fs.cwd().createFile(path, .{});
+        const file = try std.Io.Dir.cwd().createFile(io, path, .{});
 
         // IMPORTANT: defer file.close() ensures the file is closed when
         // this scope exits, even if an error occurs later.
-        defer file.close();
+        defer file.close(io);
 
-        try file.writeAll(output);
+        try file.writeStreamingAll(io, output);
         return;
     }
 
     // Write to stdout if no output file specified
-    const stdout = std.fs.File.stdout();
-    try stdout.writeAll(output);
+    const stdout = std.Io.File.stdout();
+    try stdout.writeStreamingAll(io, output);
 }
 
 // -----------------------------------------------------------------------------
