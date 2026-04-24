@@ -23,7 +23,7 @@ A blazing-fast JSON to XML converter written in Zig. This is a port of the Pytho
 
 ### Prerequisites
 
-- [Zig](https://ziglang.org/download/) 0.15.2 or later
+- [Zig](https://ziglang.org/download/) 0.16.0 or later
 
 ### Build from source
 
