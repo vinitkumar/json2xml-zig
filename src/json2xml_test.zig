@@ -459,6 +459,50 @@ test "numeric key handling" {
     try testing.expect(std.mem.indexOf(u8, xml, "<n123") != null);
 }
 
+test "special @val null emits empty element" {
+    const allocator = testing.allocator;
+    const json =
+        \\{"field": {"@attrs": {"source": "api"}, "@val": null}}
+    ;
+
+    const xml = try convertJson(allocator, json, .{ .attr_type = false, .pretty = false, .root = false });
+    defer allocator.free(xml);
+
+    try testing.expectEqualStrings("<field source=\"api\"></field>", xml);
+    try testing.expect(std.mem.indexOf(u8, xml, "null") == null);
+}
+
+test "invalid XML names use escaped name attribute once" {
+    const allocator = testing.allocator;
+    const json =
+        \\{"a&b": "value"}
+    ;
+
+    const xml = try convertJson(allocator, json, .{ .attr_type = false, .pretty = false, .root = false });
+    defer allocator.free(xml);
+
+    try testing.expectEqualStrings("<key name=\"a&amp;b\">value</key>", xml);
+    try testing.expect(std.mem.indexOf(u8, xml, "&amp;amp;") == null);
+}
+
+test "flat suffix does not leak into scalar or object tags" {
+    const allocator = testing.allocator;
+    const scalar_json =
+        \\{"name@flat": "Bike"}
+    ;
+    const nested_json =
+        \\{"item@flat": {"name": "Bike"}}
+    ;
+
+    const scalar = try convertJson(allocator, scalar_json, .{ .attr_type = false, .pretty = false, .root = false });
+    defer allocator.free(scalar);
+    const nested = try convertJson(allocator, nested_json, .{ .attr_type = false, .pretty = false, .root = false });
+    defer allocator.free(nested);
+
+    try testing.expectEqualStrings("<name>Bike</name>", scalar);
+    try testing.expectEqualStrings("<item><name>Bike</name></item>", nested);
+}
+
 test "unicode characters" {
     const allocator = testing.allocator;
     const json =
@@ -525,14 +569,15 @@ test "large array" {
     var json_buf: std.ArrayList(u8) = .empty;
     defer json_buf.deinit(allocator);
 
-    const writer = json_buf.writer(allocator);
-    try writer.writeAll("{\"items\": [");
+    try json_buf.appendSlice(allocator, "{\"items\": [");
     var i: usize = 0;
     while (i < 100) : (i += 1) {
-        if (i > 0) try writer.writeAll(",");
-        try writer.print("{d}", .{i});
+        if (i > 0) try json_buf.append(allocator, ',');
+        const number = try std.fmt.allocPrint(allocator, "{d}", .{i});
+        defer allocator.free(number);
+        try json_buf.appendSlice(allocator, number);
     }
-    try writer.writeAll("]}");
+    try json_buf.appendSlice(allocator, "]}");
 
     const xml = try convertJson(allocator, json_buf.items, .{ .pretty = false });
     defer allocator.free(xml);

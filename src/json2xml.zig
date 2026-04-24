@@ -48,7 +48,28 @@ const SpecialKeys = struct {
 //
 // std.ArrayList(u8) is a dynamic array of bytes (like std::vector<uint8_t>
 // in C++ or bytearray in Python). Its .Writer is an interface for appending.
-const Writer = std.ArrayList(u8).Writer;
+const Writer = struct {
+    list: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+
+    fn writeAll(self: Writer, bytes: []const u8) WriteError!void {
+        try self.list.appendSlice(self.allocator, bytes);
+    }
+
+    fn writeByte(self: Writer, byte: u8) WriteError!void {
+        try self.list.append(self.allocator, byte);
+    }
+
+    fn writeByteNTimes(self: Writer, byte: u8, count: usize) WriteError!void {
+        try self.list.appendNTimes(self.allocator, byte, count);
+    }
+
+    fn print(self: Writer, comptime fmt: []const u8, args: anytype) WriteError!void {
+        const formatted = try std.fmt.allocPrint(self.allocator, fmt, args);
+        defer self.allocator.free(formatted);
+        try self.writeAll(formatted);
+    }
+};
 
 // -----------------------------------------------------------------------------
 // CUSTOM ERROR TYPE
@@ -89,7 +110,7 @@ pub fn toXmlWithCapacity(allocator: std.mem.Allocator, value: std.json.Value, op
     errdefer output.deinit(allocator);
 
     // Get a writer interface for appending to the ArrayList
-    const writer = output.writer(allocator);
+    const writer = Writer{ .list = &output, .allocator = allocator };
 
     if (options.xpath_format) {
         try writeXPathXml(writer, value, options, allocator);
@@ -298,19 +319,47 @@ fn writeAttributes(
 // -----------------------------------------------------------------------------
 // MAKE VALID XML ELEMENT NAME
 // -----------------------------------------------------------------------------
-// XML element names can't start with digits. This fixes that.
-fn makeValidXmlName(key: []const u8) []const u8 {
-    if (key.len == 0) return "key";
+const XmlName = struct {
+    tag: []const u8,
+    original_name: ?[]const u8 = null,
+};
 
-    // std.ascii.isDigit checks if a character is 0-9
-    if (std.ascii.isDigit(key[0])) {
-        // allocPrint allocates a formatted string.
-        // Note: This uses page_allocator which is a global fallback.
-        // In production code, you'd pass an allocator as a parameter.
-        // The "catch" provides a fallback value if allocation fails.
-        return std.fmt.allocPrint(std.heap.page_allocator, "n{s}", .{key}) catch "key";
+fn isXmlNameStart(c: u8) bool {
+    return std.ascii.isAlphabetic(c) or c == '_' or c == ':';
+}
+
+fn isXmlNameChar(c: u8) bool {
+    return isXmlNameStart(c) or std.ascii.isDigit(c) or c == '-' or c == '.';
+}
+
+fn isValidXmlName(key: []const u8) bool {
+    if (key.len == 0 or !isXmlNameStart(key[0])) return false;
+    for (key[1..]) |c| {
+        if (!isXmlNameChar(c)) return false;
     }
-    return key;
+    return true;
+}
+
+fn makeValidXmlNameInfo(key: []const u8) XmlName {
+    if (isValidXmlName(key)) return .{ .tag = key };
+
+    if (key.len > 0 and std.ascii.isDigit(key[0])) {
+        return .{ .tag = std.fmt.allocPrint(std.heap.page_allocator, "n{s}", .{key}) catch "key" };
+    }
+
+    return .{ .tag = "key", .original_name = key };
+}
+
+fn makeValidXmlName(key: []const u8) []const u8 {
+    return makeValidXmlNameInfo(key).tag;
+}
+
+fn writeOriginalNameAttr(writer: Writer, name: ?[]const u8) WriteError!void {
+    if (name) |original_name| {
+        try writer.writeAll(" name=\"");
+        try writeEscaped(writer, original_name);
+        try writer.writeByte('"');
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -415,13 +464,14 @@ fn writeObject(
 ) WriteError!void {
     if (tag) |tag_name| {
         if (!flat) {
-            const valid_tag = makeValidXmlName(tag_name);
+            const valid_tag = makeValidXmlNameInfo(tag_name);
             try writeIndent(writer, indent, options.pretty);
             try writer.writeByte('<');
-            try writer.writeAll(valid_tag);
+            try writer.writeAll(valid_tag.tag);
             // Create an anonymous tagged union value for attributes
             // .{ .object = obj } creates a Value with the object variant
             try writeAttributes(writer, .{ .object = obj }, options, extra_attrs);
+            try writeOriginalNameAttr(writer, valid_tag.original_name);
             try writer.writeByte('>');
             try writeNewline(writer, options.pretty);
         }
@@ -449,23 +499,21 @@ fn writeObject(
 
         const specials = parseSpecials(entry.value_ptr.*);
         const value = specials.raw_value;
-        const valid_key = makeValidXmlName(key);
-        const is_flat = key_flat or specials.flat;
 
         // Recursively handle nested values
         switch (value) {
             .object => |inner_obj| {
-                if (is_flat) {
+                if (specials.flat) {
                     try writeObject(writer, inner_obj, options, null, indent, parent_is_list, true, specials.extra_attrs);
                 } else {
-                    try writeObject(writer, inner_obj, options, valid_key, indent, parent_is_list, false, specials.extra_attrs);
+                    try writeObject(writer, inner_obj, options, key, indent, parent_is_list, false, specials.extra_attrs);
                 }
             },
             .array => |inner_arr| {
-                try writeArray(writer, inner_arr, options, valid_key, indent, parent_is_list, is_flat or specials.flat);
+                try writeArray(writer, inner_arr, options, key, indent, parent_is_list, key_flat or specials.flat);
             },
             .null, .bool, .integer, .float, .number_string, .string => {
-                try writePrimitive(writer, value, options, valid_key, indent, specials.extra_attrs);
+                try writePrimitive(writer, value, options, key, indent, specials.extra_attrs);
             },
         }
     }
@@ -473,10 +521,10 @@ fn writeObject(
     // Write closing tag
     if (tag) |tag_name| {
         if (!flat) {
-            const valid_tag = makeValidXmlName(tag_name);
+            const valid_tag = makeValidXmlNameInfo(tag_name);
             try writeIndent(writer, indent, options.pretty);
             try writer.writeAll("</");
-            try writer.writeAll(valid_tag);
+            try writer.writeAll(valid_tag.tag);
             try writer.writeByte('>');
             try writeNewline(writer, options.pretty);
         }
@@ -501,11 +549,12 @@ fn writeArray(
     if (has_tag) {
         // tag.? unwraps the optional, but ONLY use this when you're 100% sure
         // it's not null. Here we know because has_tag checks tag != null first.
-        const tag_name = makeValidXmlName(tag.?);
+        const tag_name = makeValidXmlNameInfo(tag.?);
         try writeIndent(writer, indent, options.pretty);
         try writer.writeByte('<');
-        try writer.writeAll(tag_name);
+        try writer.writeAll(tag_name.tag);
         try writeAttributes(writer, .{ .array = array }, options, null);
+        try writeOriginalNameAttr(writer, tag_name.original_name);
         try writer.writeByte('>');
         try writeNewline(writer, options.pretty);
     }
@@ -529,10 +578,10 @@ fn writeArray(
     }
 
     if (has_tag) {
-        const tag_name = makeValidXmlName(tag.?);
+        const tag_name = makeValidXmlNameInfo(tag.?);
         try writeIndent(writer, indent, options.pretty);
         try writer.writeAll("</");
-        try writer.writeAll(tag_name);
+        try writer.writeAll(tag_name.tag);
         try writer.writeByte('>');
         try writeNewline(writer, options.pretty);
     }
@@ -550,11 +599,12 @@ fn writePrimitive(
     indent: usize,
     extra_attrs: ?std.json.ObjectMap,
 ) WriteError!void {
-    const tag_name = makeValidXmlName(tag);
+    const tag_name = makeValidXmlNameInfo(tag);
     try writeIndent(writer, indent, options.pretty);
     try writer.writeByte('<');
-    try writer.writeAll(tag_name);
+    try writer.writeAll(tag_name.tag);
     try writeAttributes(writer, value, options, extra_attrs);
+    try writeOriginalNameAttr(writer, tag_name.original_name);
     try writer.writeByte('>');
 
     // Write the actual value content
@@ -575,7 +625,7 @@ fn writePrimitive(
     }
 
     try writer.writeAll("</");
-    try writer.writeAll(tag_name);
+    try writer.writeAll(tag_name.tag);
     try writer.writeByte('>');
     try writeNewline(writer, options.pretty);
 }
@@ -592,7 +642,7 @@ fn writeXPathXml(writer: Writer, value: std.json.Value, options: Options, alloca
     // .empty is a shorthand for zero-initialized struct
     var buffer: std.ArrayList(u8) = .empty;
     defer buffer.deinit(allocator); // Clean up when done
-    const bufWriter = buffer.writer(allocator);
+    const bufWriter = Writer{ .list = &buffer, .allocator = allocator };
     try convertToXPath31(bufWriter, value, null);
 
     const xml = buffer.items; // Get the slice of accumulated bytes
